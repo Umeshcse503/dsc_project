@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Converter</title>
+
+  <link rel="icon" href="logo.png" type="image/png" />
+
+  <style>
+    :root{--bg:#021024;--card:#0f1724;--accent1:#7c3aed;--accent2:#06b6d4;--muted:#cbd5e1;--white:#fff}
+    html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(120deg,var(--bg),#081226);color:var(--muted)}
+    .page-header{display:flex;justify-content:center;align-items:center;gap:20px;padding:28px 20px}
+    .logo{height:110px;width:110px;border-radius:14px;object-fit:cover}
+    .title{color:var(--white);margin:0;font-size:2.2rem;font-weight:800}
+    .container{max-width:1100px;margin:20px auto;padding:0 18px;text-align:center}
+    .expr-input{width:72%;max-width:760px;padding:18px 16px;border-radius:14px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);color:var(--white);font-size:1.15rem}
+    .btn{padding:14px 20px;border-radius:12px;border:none;background:linear-gradient(90deg,var(--accent1),var(--accent2));color:white;cursor:pointer;margin-left:12px;font-weight:700;font-size:1rem}
+    .display-box{margin:20px auto;background:linear-gradient(135deg,rgba(255,255,255,0.03),rgba(0,0,0,0.04));padding:22px;border-radius:16px;text-align:left;max-width:1000px;box-shadow:0 14px 36px rgba(0,0,0,0.6)}
+    .entered{background:linear-gradient(90deg,rgba(124,58,237,0.14),rgba(6,182,212,0.08));padding:18px;border-radius:12px;color:#fff;font-family:monospace;overflow:auto;white-space:normal;font-size:1.5rem;min-height:56px}
+    .outputs{display:flex;gap:18px;margin-top:18px;flex-wrap:wrap}
+    .card{flex:1 1 48%;min-width:300px;background:rgba(255,255,255,0.02);padding:18px;border-radius:12px;font-family:monospace;color:#fff;box-shadow:0 10px 30px rgba(2,6,23,0.6);min-height:120px;display:flex;flex-direction:column;justify-content:center}
+    .card .title{font-weight:900;margin-bottom:8px;color:#eaf2ff;font-size:1.15rem}
+    #postfix-output,#prefix-output{font-size:1.4rem;color:#e6eefc;word-break:break-word;white-space:normal}
+    @media(max-width:720px){.expr-input{width:100%}.btn{margin-left:0;margin-top:12px;width:100%}}
+  </style>
+</head>
+
+<body>
+  <header class="page-header">
+    <img src="logo.png" class="logo" alt="logo">
+    <div>
+      <h1 class="title">Infix → Postfix & Prefix Converter</h1>
+    </div>
+  </header>
+
+  <div class="container">
+    <div style="display:flex;justify-content:center;align-items:center;flex-wrap:wrap;gap:12px">
+      <input id="expr-input" class="expr-input" type="text" placeholder="e.g. (A+B)*C or 3+4*2/(1-5)^2^3" />
+      <button id="convert-btn" class="btn">Convert</button>
+      <button id="clear-btn" class="btn" type="button" style="background:rgba(255,255,255,0.06);color:var(--muted);border:1px solid rgba(255,255,255,0.04);">Clear</button>
+    </div>
+
+    <div class="display-box" aria-live="polite">
+      <div style="font-size:0.98rem;color:#cbd5e1;margin-bottom:10px">Entered expression</div>
+      <div id="entered-value" class="entered">—</div>
+
+      <div style="font-size:0.95rem;color:#cbd5e1;margin-top:14px">Conversion results</div>
+      <div class="outputs">
+        <div class="card">
+          <div class="title">Postfix</div>
+          <div id="postfix-output">—</div>
+        </div>
+        <div class="card">
+          <div class="title">Prefix</div>
+          <div id="prefix-output">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // tokenizer
+    function tokenize(s) {
+      const tokens = [];
+      let i = 0;
+      while (i < s.length) {
+        const ch = s[i];
+        if (/\s/.test(ch)) { i++; continue; }
+        if (/[0-9.]/.test(ch)) {
+          let num = ch; i++;
+          while (i < s.length && /[0-9.]/.test(s[i])) { num += s[i++]; }
+          tokens.push(num); continue;
+        }
+        if (/[A-Za-z]/.test(ch)) {
+          let id = ch; i++;
+          while (i < s.length && /[A-Za-z0-9_]/.test(s[i])) { id += s[i++]; }
+          tokens.push(id); continue;
+        }
+        tokens.push(ch);
+        i++;
+      }
+      return tokens;
+    }
+
+    // handle unary minus by inserting 0 before unary '-'
+    function insertUnaryZeros(tokens) {
+      const out = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+        if (t === '-') {
+          const prev = out.length ? out[out.length - 1] : null;
+          if (prev === null || prev === '(' || isOperator(prev)) {
+            out.push('0');
+          }
+        }
+        out.push(t);
+      }
+      return out;
+    }
+
+    const precedence = { '+': 2, '-': 2, '*': 3, '/': 3, '^': 4 };
+    function isOperator(t) { return ['+','-','*','/','^'].includes(t); }
+
+    // assoc with optional flip for prefix conversion
+    function assoc(op, flip = false) {
+      if (op === '^') return flip ? 'left' : 'right';
+      return 'left';
+    }
+
+    // infix -> postfix (shunting-yard). If flipAssoc true then '^' treated as left-assoc
+    function infixToPostfix(tokens, flipAssoc = false) {
+      const out = [];
+      const stack = [];
+      for (const tok of tokens) {
+        if (isOperator(tok)) {
+          while (stack.length) {
+            const top = stack[stack.length - 1];
+            if (!isOperator(top)) break;
+            const pTop = precedence[top] || 0;
+            const pTok = precedence[tok] || 0;
+            if (pTop > pTok || (pTop === pTok && assoc(tok, flipAssoc) === 'left')) {
+              out.push(stack.pop());
+            } else break;
+          }
+          stack.push(tok);
+        } else if (tok === '(') {
+          stack.push(tok);
+        } else if (tok === ')') {
+          while (stack.length && stack[stack.length - 1] !== '(') out.push(stack.pop());
+          if (stack.length && stack[stack.length - 1] === '(') stack.pop();
+          else throw new Error('Mismatched parentheses');
+        } else {
+          out.push(tok);
+        }
+      }
+      while (stack.length) {
+        const top = stack.pop();
+        if (top === '(' || top === ')') throw new Error('Mismatched parentheses');
+        out.push(top);
+      }
+      return out;
+    }
+
+    // infix -> prefix using reversed-postfix approach with flipped associativity
+    function infixToPrefix(tokens) {
+      // reverse tokens and swap parentheses
+      const rev = [...tokens].reverse().map(t => t === '(' ? ')' : t === ')' ? '(' : t);
+      // when computing postfix on reversed tokens we must flip associativity for right-assoc ops
+      const revPost = infixToPostfix(rev, true);
+      return revPost.reverse();
+    }
+
+    // DOM
+    const inputEl = document.getElementById('expr-input');
+    const btn = document.getElementById('convert-btn');
+    const clearBtn = document.getElementById('clear-btn');
+    const postfixOut = document.getElementById('postfix-output');
+    const prefixOut = document.getElementById('prefix-output');
+    const enteredValueEl = document.getElementById('entered-value');
+
+    function convert() {
+      const expr = inputEl.value.trim();
+      if (!expr) { alert('Please enter an expression to convert.'); inputEl.focus(); return; }
+      try {
+        let tokens = tokenize(expr);
+        tokens = insertUnaryZeros(tokens); // ensure unary minus handled
+        const postfix = infixToPostfix(tokens);
+        const prefix = infixToPrefix(tokens);
+        enteredValueEl.textContent = expr;
+        postfixOut.textContent = postfix.join(' ');
+        prefixOut.textContent = prefix.join(' ');
+      } catch (e) {
+        enteredValueEl.textContent = expr || '—';
+        postfixOut.textContent = 'Invalid expression';
+        prefixOut.textContent = 'Invalid expression';
+        alert('Invalid expression: ' + e.message);
+        inputEl.focus();
+      }
+    }
+
+    function clearFields() {
+      inputEl.value = '';
+      enteredValueEl.textContent = '—';
+      postfixOut.textContent = '—';
+      prefixOut.textContent = '—';
+      inputEl.focus();
+    }
+
+    btn.addEventListener('click', convert);
+    clearBtn.addEventListener('click', clearFields);
+    inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') convert(); });
+  </script>
+</body>
+
+</html>
